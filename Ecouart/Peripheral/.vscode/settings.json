@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "uuid.h": "c",
+        "hci.h": "c",
+        "gatt.h": "c",
+        "gap.h": "c",
+        "conn.h": "c",
+        "bluetooth.h": "c",
+        "ble_peripheral.h": "c",
+        "type_traits": "c",
+        "hrs.h": "c",
+        "buf.h": "c"
+    },
+    "cmake.sourceDirectory": "${workspaceFolder}/zephyr"
+}

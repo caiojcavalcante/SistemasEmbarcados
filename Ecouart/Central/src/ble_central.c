@@ -12,6 +12,15 @@
 #include "ble_central.h"
 
 /**
+ * @brief Callback que trata a stack bluetooth atualizando tamanho da MTU.
+ *
+ * @param conn [in] Ponteiro para estrutura de handle de conexão.
+ * @param tx  Tamanho da MTU TX.
+ * @param rx  Tamanho da MTU RX.
+ */
+void ble_central_mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx);
+
+/**
  * @brief Callback que trata a verificação do Peripheral.
  *
  * @param data [in] Ponteiro para estrutura que contém os dados dos serviços do
@@ -21,7 +30,7 @@
  * @return true Em caso de sucesso.
  * @return false EM caso de erro.
  */
-static bool eir_found(struct bt_data *data, void *user_data);
+static bool ble_central_eir_found(struct bt_data *data, void *user_data);
 
 /**
  * @brief Callback que trata a identificação de um dispositivo em adversiting.
@@ -94,26 +103,43 @@ static void ble_central_start_scan(void);
  */
 static void ble_central_search_for_peripherals(int err);
 
-void mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx) {
-  printk("Updated MTU: TX: %d RX: %d bytes\n", tx, rx);
+/**
+ * @brief Estrutura interna de variáveis.
+ *
+ */
+static struct {
+  struct bt_conn_cb conn_callbacks; /* Estrutura de callbacks de conexão. */
+  struct bt_gatt_cb gatt_callbacks; /* Estrutura de callbacks de GATT. */
+  struct bt_gatt_discover_params
+      discover_params; /* Estrutra de parâmetros para descobertas de atributos
+                          GATT. */
+  struct bt_gatt_subscribe_params
+      subscribe_params;         /* Estrutura de parâmetros para subcribe.  */
+  struct bt_conn *default_conn; /* Ponteiro para handle de conexões ativas. */
+  uint16_t write_handle;        /* Handle da característica de write. */
+  struct bt_uuid_16 uuid;       /* Estrutura que define UUIDs. */
+} self = {
+    .conn_callbacks =
+        {
+            .connected = ble_central_connected,
+            .disconnected = ble_central_disconnected,
+        },
+    .gatt_callbacks =
+        {
+            .att_mtu_updated = ble_central_mtu_updated,
+        },
+    .discover_params = {0},
+    .subscribe_params = {0},
+    .default_conn = NULL,
+    .write_handle = 0,
+    .uuid = BT_UUID_INIT_16(0),
+};
+
+void ble_central_mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx) {
+  printk("|BLE CENTRAL| Updated MTU. TX:%d RX:%d bytes.\n", tx, rx);
 }
 
-static struct bt_gatt_cb gatt_callbacks = {
-    .att_mtu_updated = mtu_updated,
-};
-
-static struct bt_conn_cb conn_callbacks = {
-    .connected = ble_central_connected,
-    .disconnected = ble_central_disconnected,
-};
-static struct bt_gatt_discover_params discover_params;
-static struct bt_gatt_subscribe_params subscribe_params;
-struct bt_conn *default_conn;
-static uint16_t write_handle = 0;
-
-static struct bt_uuid_128 uuid = BT_UUID_INIT_128(0);
-
-static bool eir_found(struct bt_data *data, void *user_data) {
+static bool ble_central_eir_found(struct bt_data *data, void *user_data) {
   bt_addr_le_t *addr = user_data;
   int i;
 
@@ -146,8 +172,8 @@ static bool eir_found(struct bt_data *data, void *user_data) {
       }
 
       param = BT_LE_CONN_PARAM_DEFAULT;
-      err =
-          bt_conn_le_create(addr, BT_CONN_LE_CREATE_CONN, param, &default_conn);
+      err = bt_conn_le_create(addr, BT_CONN_LE_CREATE_CONN, param,
+                              &self.default_conn);
       if (err) {
         printk("|BLE CENTRAL| Create conn failed (err %d).\n", err);
         ble_central_start_scan();
@@ -172,7 +198,7 @@ static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
    * serviços. */
   if (type == BT_GAP_ADV_TYPE_ADV_IND ||
       type == BT_GAP_ADV_TYPE_ADV_DIRECT_IND) {
-    bt_data_parse(ad, eir_found, (void *)addr);
+    bt_data_parse(ad, ble_central_eir_found, (void *)addr);
   }
 }
 
@@ -211,47 +237,49 @@ ble_central_discover_func(struct bt_conn *conn, const struct bt_gatt_attr *attr,
   printk("|BLE CENTRAL| Discover attribute handle: %u.\n", attr->handle);
 
   /* Identifica o serviço BLE UART. */
-  if (!bt_uuid_cmp(discover_params.uuid, BLE_UART_SVC_UUID)) {
-    memcpy(&uuid, BLE_UART_NOTIFY_CHAR_UUID, sizeof(uuid));
-    discover_params.uuid = &uuid.uuid;
-    discover_params.start_handle = attr->handle + 1;
-    discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
+  if (!bt_uuid_cmp(self.discover_params.uuid, BLE_UART_SVC_UUID)) {
+    memcpy(&self.uuid, BLE_UART_NOTIFY_CHAR_UUID, sizeof(self.uuid));
+    self.discover_params.uuid = &self.uuid.uuid;
+    self.discover_params.start_handle = attr->handle + 1;
+    self.discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
 
     /* Continua descoberta para a característica de notify. */
-    err = bt_gatt_discover(conn, &discover_params);
+    err = bt_gatt_discover(conn, &self.discover_params);
     if (err) {
       printk("|BLE CENTRAL| Discover failed (err %d).\n", err);
     }
-  } else if (!bt_uuid_cmp(discover_params.uuid, BLE_UART_NOTIFY_CHAR_UUID)) {
-    memcpy(&uuid, BLE_UART_WRITE_CHAR_UUID, sizeof(uuid));
-    discover_params.uuid = &uuid.uuid;
-    discover_params.start_handle = attr->handle + 1;
-    discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
-    subscribe_params.value_handle = bt_gatt_attr_value_handle(attr);
+  } else if (!bt_uuid_cmp(self.discover_params.uuid,
+                          BLE_UART_NOTIFY_CHAR_UUID)) {
+    memcpy(&self.uuid, BLE_UART_WRITE_CHAR_UUID, sizeof(self.uuid));
+    self.discover_params.uuid = &self.uuid.uuid;
+    self.discover_params.start_handle = attr->handle + 1;
+    self.discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
+    self.subscribe_params.value_handle = bt_gatt_attr_value_handle(attr);
 
     /* Continua descoberta para a caracterísitca de escrita. */
-    err = bt_gatt_discover(conn, &discover_params);
+    err = bt_gatt_discover(conn, &self.discover_params);
     if (err) {
       printk("|BLE CENTRAL| Discover failed (err %d).\n", err);
     }
-  } else if (!bt_uuid_cmp(discover_params.uuid, BLE_UART_WRITE_CHAR_UUID)) {
-    memcpy(&uuid, BT_UUID_GATT_CCC, sizeof(uuid));
-    discover_params.uuid = &uuid.uuid;
-    discover_params.start_handle = attr->handle + 1;
-    discover_params.type = BT_GATT_DISCOVER_DESCRIPTOR;
-    write_handle = bt_gatt_attr_value_handle(attr);
+  } else if (!bt_uuid_cmp(self.discover_params.uuid,
+                          BLE_UART_WRITE_CHAR_UUID)) {
+    memcpy(&self.uuid, BT_UUID_GATT_CCC, sizeof(self.uuid));
+    self.discover_params.uuid = &self.uuid.uuid;
+    self.discover_params.start_handle = attr->handle + 1;
+    self.discover_params.type = BT_GATT_DISCOVER_DESCRIPTOR;
+    self.write_handle = bt_gatt_attr_value_handle(attr);
 
     /* Continua descoberta para descritor do serviço. */
-    err = bt_gatt_discover(conn, &discover_params);
+    err = bt_gatt_discover(conn, &self.discover_params);
     if (err) {
       printk("|BLE CENTRAL| Discover failed (err %d).\n", err);
     }
   } else {
-    subscribe_params.notify = ble_central_notify;
-    subscribe_params.value = BT_GATT_CCC_NOTIFY;
-    subscribe_params.ccc_handle = attr->handle;
+    self.subscribe_params.notify = ble_central_notify;
+    self.subscribe_params.value = BT_GATT_CCC_NOTIFY;
+    self.subscribe_params.ccc_handle = attr->handle;
 
-    err = bt_gatt_subscribe(conn, &subscribe_params);
+    err = bt_gatt_subscribe(conn, &self.subscribe_params);
     if (err && err != -EALREADY) {
       printk("|BLE CENTRAL| Subscribe failed (err %d).\n", err);
     } else {
@@ -274,8 +302,8 @@ static void ble_central_connected(struct bt_conn *conn, uint8_t conn_err) {
   if (conn_err) {
     printk("|BLE CENTRAL| Failed to connect to %s (%u).\n", addr, conn_err);
 
-    bt_conn_unref(default_conn);
-    default_conn = NULL;
+    bt_conn_unref(self.default_conn);
+    self.default_conn = NULL;
 
     ble_central_start_scan();
     return;
@@ -284,15 +312,15 @@ static void ble_central_connected(struct bt_conn *conn, uint8_t conn_err) {
   printk("|BLE CENTRAL| Connected: %s.\n", addr);
 
   /* Inicializa identificação das características do dispositivos pareado. */
-  if (conn == default_conn) {
-    memcpy(&uuid, BLE_UART_SVC_UUID, sizeof(uuid));
-    discover_params.uuid = &uuid.uuid;
-    discover_params.func = ble_central_discover_func;
-    discover_params.start_handle = 0x0001;
-    discover_params.end_handle = 0xffff;
-    discover_params.type = BT_GATT_DISCOVER_PRIMARY;
+  if (conn == self.default_conn) {
+    memcpy(&self.uuid, BLE_UART_SVC_UUID, sizeof(self.uuid));
+    self.discover_params.uuid = &self.uuid.uuid;
+    self.discover_params.func = ble_central_discover_func;
+    self.discover_params.start_handle = 0x0001;
+    self.discover_params.end_handle = 0xffff;
+    self.discover_params.type = BT_GATT_DISCOVER_PRIMARY;
 
-    err = bt_gatt_discover(default_conn, &discover_params);
+    err = bt_gatt_discover(self.default_conn, &self.discover_params);
     if (err) {
       printk("|BLE CENTRAL| Discover failed(err %d).\n", err);
       return;
@@ -304,9 +332,9 @@ static void ble_central_disconnected(struct bt_conn *conn, uint8_t reason) {
   printk("|BLE CENTRAL| Disconnected, (reason %u).\n", reason);
 
   /* Decrementa conexão anterior do contador. */
-  if (default_conn) {
-    bt_conn_unref(default_conn);
-    default_conn = NULL;
+  if (self.default_conn) {
+    bt_conn_unref(self.default_conn);
+    self.default_conn = NULL;
   }
 
   /* Volta a realizar o escaneamento. */
@@ -339,13 +367,13 @@ static void ble_central_search_for_peripherals(int err) {
 int ble_central_write_input(uint8_t *buf, uint16_t buf_len) {
   int err = 0;
 
-  if (default_conn == NULL) {
+  if (self.default_conn == NULL) {
     printk("Not connected!");
     return -1;
   }
 
-  err = bt_gatt_write_without_response(default_conn, write_handle, buf, buf_len,
-                                       false);
+  err = bt_gatt_write_without_response(self.default_conn, self.write_handle,
+                                       buf, buf_len, false);
   if (err) {
     printk("%s: Write cmd failed (%d).\n", __func__, err);
   }
@@ -357,8 +385,8 @@ int ble_central_init() {
   int err = 0;
 
   /* Configura os callbacks necessários para o BLE. */
-  bt_conn_cb_register(&conn_callbacks);
-  bt_gatt_cb_register(&gatt_callbacks);
+  bt_conn_cb_register(&self.conn_callbacks);
+  bt_gatt_cb_register(&self.gatt_callbacks);
 
   /* Incializa Bluetooth. */
   err = bt_enable(ble_central_search_for_peripherals);

@@ -35,11 +35,11 @@ static bool ble_central_eir_found(struct bt_data *data, void *user_data);
 /**
  * @brief Callback que trata a identificação de um dispositivo em adversiting.
  *
- * @param addr Ponteiro para estrutura que identifica o dispostivo.
+ * @param addr [in] Ponteiro para estrutura que identifica o dispostivo.
  * @param rssi RSSI do dispositivo identificado.
  * @param type Tipo de conexão disponível para ser estabelecida com o
  * dispositivo.
- * @param ad Ponteiro para estrutura de representação de conexão.
+ * @param ad [in] Ponteiro para estrutura de representação de conexão.
  */
 static void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
                          struct net_buf_simple *ad);

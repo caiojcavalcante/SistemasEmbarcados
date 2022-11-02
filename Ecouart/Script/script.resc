@@ -45,10 +45,10 @@ emulation SetGlobalQuantum "0.00001"
 macro reset
 """
     mach set "central"
-    sysbus LoadELF @projects/IC/aulas/SistemasEmbarcados/Ecouart/Central/.pio/build/nrf52840_dk/firmware.elf
+    sysbus LoadELF $ORIGIN/../Central/.pio/build/nrf52840_dk/firmware.elf
 
     mach set "peripheral"
-    sysbus LoadELF @projects/IC/aulas/SistemasEmbarcados/Ecouart/Peripheral/.pio/build/nrf52840_dk/firmware.elf
+    sysbus LoadELF $ORIGIN/../Peripheral/.pio/build/nrf52840_dk/firmware.elf
 """
 runMacro $reset
 
